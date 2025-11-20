@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Password Breach Checker & Generator</title>
+
+<!-- zxcvbn for strength estimation (client-side) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.4.2/zxcvbn.js" integrity="sha512-8l4Jt4u0Q+f5u7eXVBb2sG3n4ZqO6zQ5gFqaFj0q0m2VDB+P+R0s0s4N8gcZ3rVgN3u2a0q9qX+0g2/kq3c3/Q==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+<style>
+  :root{
+    --bg:#f4f6f8;
+    --card:#fff;
+    --accent:#2d89ef;
+    --accent-dark:#1b5dab;
+    --muted:#6b7280;
+    --good:#16a34a;
+    --bad:#ef4444;
+  }
+body{font-family:Inter,Segoe UI,Helvetica,Arial;margin:0;background:var(--bg);color:#111}*/
+  header{background:linear-gradient(90deg,var(--accent),#4aa3ff);color:#fff;padding:20px;text-align:center}
+  .container{max-width:100% margin:28px auto;padding:0 16px}
+  .grid{display:grid;grid-template-columns:1fr 420px;gap:20px}
+  .card{background:var(--card);border-radius:10px;padding:18px;box-shadow:0 6px 24px rgba(10,20,40,0.06)}
+  h2{margin:0 0 10px 0}
+  label{display:block;font-size:14px;color:var(--muted);margin-top:12px}
+  input[type="password"], input[type="text"], input[type="number"], select, textarea{
+    width:100%;padding:10px 12px;margin-top:6px;border-radius:8px;border:1px solid #e6e6e9;font-size:15px;
+  }
+  button{background:var(--accent);color:#fff;padding:10px 14px;border:none;border-radius:8px;cursor:pointer}
+  button:hover{background:var(--accent-dark)}
+  .row{display:flex;gap:8px;align-items:center}
+  .muted{color:var(--muted);font-size:13px}
+  .result{margin-top:12px;padding:10px;border-radius:8px;background:#f8fafc;border:1px solid #eef2ff}
+  .strength-bar{height:10px;border-radius:6px;background:#eee;overflow:hidden;margin-top:8px}
+  .strength-fill{height:100%;width:0%;background:var(--bad);transition:width .3s ease,background .3s ease}
+  .badge{display:inline-block;padding:6px 8px;border-radius:999px;font-weight:600;font-size:13px}
+  .copy-btn{background:#111;color:#fff;padding:6px 8px;border-radius:6px;border:none;cursor:pointer}
+  footer{margin:30px 0;text-align:center;color:var(--muted);font-size:13px}
+  @media (max-width:880px){ .grid{grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Password Breach Checker</h1>
+</header>
+
+<div class="container">
+  <div class="grid">
+    <!-- LEFT: Breach Checker -->
+    <div class="card">
+      <h2>Check a password</h2>
+
+      <label for="pwInput">Password</label>
+      <input id="pwInput" type="password" placeholder="Enter password (local only)" autocomplete="new-password" />
+
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button id="checkBtn">Check</button>
+        <button id="showBtn" class="copy-btn" title="Toggle show/hide">Show</button>
+        <button id="genFromBtn" class="copy-btn" title="Generate a suggested password and put into input">Use Suggested</button>
+      </div>
+
+      <div id="checkResult" class="result" style="display:none"></div>
+
+      <label style="margin-top:14px">Strength (zxcvbn)</label>
+      <div id="strengthText" class="muted">No password checked yet</div>
+      <div class="strength-bar" aria-hidden="true"><div id="strengthFill" class="strength-fill"></div></div>
+      <div style="margin-top:8px" class="muted">Score: <span id="strengthScore">-</span> (0-4)</div>
+
+      <hr style="margin:18px 0;border:none;border-top:1px solid #eef2ff" />   
+      <input id="length" type="number" min="8" max="80" step="1" value="16" />
+
+      <label style="margin-top:8px">Include characters</label>
+        <label><input id="lower" type="checkbox" checked /> Lowercase (a-z)</label>
+        <label><input id="upper" type="checkbox" checked /> Uppercase (A-Z)</label>
+        <label><input id="digits" type="checkbox" checked /> Digits (0-9)</label>
+        <label><input id="symbols" type="checkbox" checked /> Symbols (!@#$...)</label>
+
+        <button id="genBtn">Generate</button>
+        <button id="copyGen" class="copy-btn">Copy</button>
+
+      <label style="margin-top:12px">Generated Password</label>
+      <input id="generated" type="text" readonly placeholder="Your strong password appears here" />
+
+    
+
+    </div>
+
+<script>
+/*
+  PW Breach + Generator
+  - Client-side SHA-1 (Web Crypto) + HIBP range API
+  - zxcvbn provides strength score (0-4)
+  - Password generator with character choices
+*/
+
+const pwInput = document.getElementById('pwInput');
+const checkBtn = document.getElementById('checkBtn');
+const checkResult = document.getElementById('checkResult');
+const historyList = document.getElementById('historyList');
+const strengthFill = document.getElementById('strengthFill');
+const strengthText = document.getElementById('strengthText');
+const strengthScore = document.getElementById('strengthScore');
+const showBtn = document.getElementById('showBtn');
+const genFromBtn = document.getElementById('genFromBtn');
+
+const genBtn = document.getElementById('genBtn');
+const copyGen = document.getElementById('copyGen');
+const generated = document.getElementById('generated');
+const lengthInput = document.getElementById('length');
+const lower = document.getElementById('lower');
+const upper = document.getElementById('upper');
+const digits = document.getElementById('digits');
+const symbols = document.getElementById('symbols');
+const entropyBox = document.getElementById('entropyBox');
+
+let history = [];
+
+// Utility: compute SHA-1 using Web Crypto, return uppercase hex string
+async function sha1Hex(msg) {
+  const buf = new TextEncoder().encode(msg);
+  const hashBuf = await crypto.subtle.digest('SHA-1', buf);
+  const arr = Array.from(new Uint8Array(hashBuf));
+  return arr.map(b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
+}
+
+// HIBP range query
+async function hibpRange(prefix) {
+  // Add-Padding header can be used to request padded responses (privacy).
+  const url = `https://api.pwnedpasswords.com/range/${prefix}`;
+  // fetch with no-cache to avoid browser caching stale results
+  const res = await fetch(url, {cache: 'no-store', headers: {'Add-Padding': 'true'}});
+  if (!res.ok) throw new Error('HIBP request failed: ' + res.status);
+  return res.text();
+}
+
+// parse HIBP response text for suffix match
+function findSuffixCount(fullHash, hibpText) {
+  const suffix = fullHash.slice(5);
+  const lines = hibpText.split('\n');
+  for (const line of lines) {
+    if (!line) continue;
+    const [s, count] = line.trim().split(':');
+    if (s.toUpperCase() === suffix) return parseInt(count || '0', 10);
+  }
+  return 0;
+}
+
+// update UI history
+function updateHistoryUI() {
+  if (!history.length) {
+    historyList.textContent = 'No checks yet.';
+    return;
+  }
+  historyList.innerHTML = '';
+  history.slice().reverse().forEach(item => {
+    const el = document.createElement('div');
+    el.style.marginBottom = '8px';
+    el.style.padding = '8px';
+    el.style.borderRadius = '8px';
+    el.style.background = '#fafbff';
+    el.style.fontSize = '14px';
+    el.innerHTML = `<strong>${escapeHtml(item.sample)}</strong> — ${item.count>0 ? '<span style="color:'+getColor(item.count)+'">Compromised ('+item.count+')</span>' : '<span style="color:var(--good)">Not found</span>'} <div style="color:var(--muted);font-size:12px;margin-top:6px">${item.time}</div>`;
+    historyList.appendChild(el);
+  });
+}
+
+// get color by count
+function getColor(count){
+  if(count>100000) return 'var(--bad)';
+  if(count>1000) return '#ff8a00';
+  return 'var(--good)';
+}
+
+// escape HTML helper
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function(m){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]);});
+}
+
+// Strength UI update using zxcvbn if available
+function updateStrengthUI(pw) {
+  if (typeof zxcvbn === 'function') {
+    const r = zxcvbn(pw);
+    const score = r.score; // 0..4
+    const percent = (score / 4) * 100;
+    strengthFill.style.width = percent + '%';
+    let color = 'var(--bad)';
+    if (score >= 4) color = 'var(--good)';
+    else if (score >= 3) color = '#f59e0b';
+    else if (score >= 1) color = '#fb923c';
+    strengthFill.style.background = color;
+    strengthText.textContent = r.feedback.warning || (r.feedback.suggestions.length ? r.feedback.suggestions[0] : 'Good password');
+    strengthScore.textContent = score + ' / 4';
+  } else {
+    // fallback: simple entropy heuristic
+    const len = pw.length;
+    const score = Math.min(4, Math.floor(len / 6));
+    const percent = (score / 4) * 100;
+    strengthFill.style.width = percent + '%';
+    strengthFill.style.background = score >= 3 ? 'var(--good)' : '#f59e0b';
+    strengthText.textContent = len ? 'Estimated based on length' : 'No password checked yet';
+    strengthScore.textContent = score + ' / 4';
+  }
+}
+
+// Main check function
+checkBtn.addEventListener('click', async () => {
+  const pw = pwInput.value || '';
+  checkResult.style.display = 'block';
+  checkResult.textContent = 'Computing...';
+  try {
+    if (!pw) {
+      checkResult.style.color = 'orange';
+      checkResult.textContent = 'Please enter a password to check.';
+      return;
+    }
+    updateStrengthUI(pw);
+    const fullHash = await sha1Hex(pw);
+    const prefix = fullHash.slice(0,5);
+    const hibpText = await hibpRange(prefix);
+    const count = findSuffixCount(fullHash, hibpText);
+    // mask sample to show (do not reveal full pw)
+    const masked = pw.length >= 4 ? pw.slice(0,2) + '*'.repeat(Math.max(0,pw.length-4)) + pw.slice(-2) : '*'.repeat(pw.length);
+    const now = new Date().toLocaleString();
+    history.push({sample: masked, count: count, time: now});
+    updateHistoryUI();
+
+    if (count > 0) {
+      checkResult.style.color = 'var(--bad)';
+      checkResult.innerHTML = `<strong>Compromised!</strong> Seen <strong>${count.toLocaleString()}</strong> time(s) in breach datasets. Consider changing this password immediately and avoid reusing it.`;
+    } else {
+      checkResult.style.color = 'var(--good)';
+      checkResult.innerHTML = `<strong>Not found</strong> in HIBP breach dataset (good). Still consider using a strong unique password or passphrase.`;
+    }
+  } catch (err) {
+    console.error(err);
+    checkResult.style.color = 'orange';
+    checkResult.innerHTML = `Error checking password: ${escapeHtml(err.message || String(err))}`;
+  }
+});
+
+// toggle show/hide
+showBtn.addEventListener('click', () => {
+  if (pwInput.type === 'password') { pwInput.type = 'text'; showBtn.textContent = 'Hide'; }
+  else { pwInput.type = 'password'; showBtn.textContent = 'Show'; }
+});
+
+// generator
+function randomFrom(arr) { return arr[Math.floor(Math.random()*arr.length)]; }
+
+function generatePassword(len, opts) {
+  const sets = [];
+  if (opts.lower) sets.push('abcdefghijklmnopqrstuvwxyz');
+  if (opts.upper) sets.push('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+  if (opts.digits) sets.push('0123456789');
+  if (opts.symbols) sets.push('!@#$%^&*()-_=+[]{};:,.<>/?|~`');
+  if (!sets.length) return '';
+
+  // ensure at least one char from each chosen set for better strength
+  let pwd = '';
+  for (const s of sets) pwd += randomFrom(s);
+
+  // fill remaining length
+  const all = sets.join('');
+  while (pwd.length < len) pwd += randomFrom(all);
+
+  // shuffle
+  pwd = pwd.split('').sort(()=>0.5 - Math.random()).join('');
+  return pwd.slice(0, len);
+}
+
+// generate button
+genBtn.addEventListener('click', () => {
+  const len = Math.max(4, Math.min(80, parseInt(lengthInput.value || 16)));
+  const opts = {lower: lower.checked, upper: upper.checked, digits: digits.checked, symbols: symbols.checked};
+  const pw = generatePassword(len, opts);
+  generated.value = pw;
+  // show entropy estimate via zxcvbn if available
+  if (typeof zxcvbn === 'function') {
+    const r = zxcvbn(pw);
+    entropyBox.style.display = 'block';
+    entropyBox.innerHTML = `<strong>zxcvbn score:</strong> ${r.score} / 4<br><strong>Estimated guesses:</strong> ${r.guesses.toLocaleString()}<br><div style="margin-top:6px;color:var(--muted)">${r.feedback.warning || (r.feedback.suggestions.length ? r.feedback.suggestions.join(' ') : 'No suggestions')}</div>`;
+  } else {
+    entropyBox.style.display = 'block';
+    entropyBox.textContent = 'Password generated. zxcvbn not available for detailed entropy.';
+  }
+});
+
+// copy generated
+copyGen.addEventListener('click', async () => {
+  const t = generated.value || '';
+  if (!t) return;
+  try { await navigator.clipboard.writeText(t); copyGen.textContent = 'Copied'; setTimeout(()=>copyGen.textContent='Copy',1200); }
+  catch(e){ alert('Copy failed: ' + (e.message||e)); }
+});
+
+// fill input from generated
+genFromBtn.addEventListener('click', () => {
+  if (generated.value) pwInput.value = generated.value;
+  else {
+    // auto generate if empty
+    genBtn.click();
+    pwInput.value = generated.value;
+  }
+});
+
+// keyboard: Enter triggers check
+pwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') checkBtn.click(); });
+
+// small accessibility: set initial history text
+updateHistoryUI();
+
+</script>
+</body>
+</html>
